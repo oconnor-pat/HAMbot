@@ -1,136 +1,175 @@
 import asyncio
-import json
 import os
-import random
-import requests
-import html
+import logging
 from dotenv import load_dotenv
 import nextcord
 from nextcord.ext import commands
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 # Load env variables
 load_dotenv()
-GUILD_ID = int(os.getenv("GUILD_ID"))  # Ensure GUILD_ID is an integer if it's numeric
+GUILD_IDS = [int(guild_id) for guild_id in os.getenv("GUILD_IDS").split(",")]
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 intents = nextcord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Initializes the scheduler
+scheduler = AsyncIOScheduler()
 
-def generate_question(
-    category=None,
-    id=None,
-    tags=None,
-    difficulty=None,
-    regions=None,
-    isNiche=None,
-    type=None,
-):
-    # Parameters for the question
-    params = {
-        "category": category,
-        "id": id,
-        "tags": tags,
-        "difficulty": difficulty,
-        "regions": regions,
-        "isNiche": isNiche,
-        "type": type,
-    }
-
-    response = requests.get("https://the-trivia-api.com/v2/questions", params=params)
-
-    print(f"Response status code: {response.status_code}")
-    print(f"Response text: {response.text}")
-
-    try:
-        response.raise_for_status()
-        # Parse the JSON response
-        data = response.json()
-    except requests.exceptions.HTTPError as http_err:
-        print(f"HTTP error occurred: {http_err}")
-        return None, None, None
-    except requests.exceptions.RequestException as err:
-        print(f"An error occurred: {err}")
-        return None, None, None
-    except json.JSONDecodeError:
-        print("Invalid JSON received")
-        return None, None, None
-
-    print(f"Response data: {data}")  # Print the entire data list
-
-    # Check if data is empty
-    if not data:
-        print("No questions found.")
-        return None, None, None
-
-    # Extract question and correct answer from the first question in the list
-    first_question = data[0]
-    question_text = first_question.get("question", {}).get("text")
-    correct_answer = first_question.get("correctAnswer")
-    incorrect_answers = first_question.get("incorrectAnswers", [])
-
-    return question_text, correct_answer, incorrect_answers
+poll_responses = {"available": 0, "unavailable": 0, "responded_users": set()}
 
 
-@bot.slash_command(name="trivia", description="Start a trivia game")
-async def trivia_command(interaction: nextcord.Interaction):
-    question, correct_answer, incorrect_answers = generate_question()
-    if not question:
-        await interaction.response.send_message(
-            "Sorry, no trivia question available at the moment.", ephemeral=True
-        )
+# Function to send the daily poll
+async def send_daily_poll():
+    guild = bot.get_guild(GUILD_IDS[0])  # Assuming only one guild
+    channel = nextcord.utils.get(guild.text_channels, name="general")
+    if channel is None:
+        logger.error("Channel 'general' not found")
         return
 
-    all_answers = incorrect_answers + [correct_answer]
-    random.shuffle(all_answers)  # Shuffle the answers
+    message = await channel.send(
+        "Availability for raid tonight:\nReact with ✅ for Available and ❌ for Unavailable."
+    )
+    await message.add_reaction("✅")
+    await message.add_reaction("❌")
 
-    # Unescape HTML entities in the question and answers
-    question = html.unescape(question)
-    all_answers = [html.unescape(answer) for answer in all_answers]
-    correct_answer = html.unescape(correct_answer)
+    # Reset poll responses
+    poll_responses["available"] = 0
+    poll_responses["unavailable"] = 0
+    poll_responses["responded_users"].clear()
 
-    # Assign each answer to a letter
-    answer_dict = {chr(65 + i): answer for i, answer in enumerate(all_answers)}
+    # Start handling reactions
+    asyncio.create_task(handle_reactions(message, channel))
 
-    content = f"Trivia Question: {question}\n"
-    for letter, answer in answer_dict.items():
-        content += f"{letter}: {answer}\n"
 
-    await interaction.response.send_message(content=content, ephemeral=False)
-
-    answered_users = set()
-
-    def check(m):
-        return (
-            m.channel == interaction.channel
-            and m.content.strip().upper() in answer_dict.keys()
-            and m.author.id not in answered_users
-        )
+async def handle_reactions(message, channel):
+    logger.info("handle_reactions started.")
+    start_time = asyncio.get_event_loop().time()
+    total_timeout = 18000.0  # 5 hours in seconds
+    reaction_wait_timeout = 30.0  # 30 seconds
 
     while True:
         try:
-            print("Waiting for user's response...")
-            response = await bot.wait_for("message", check=check, timeout=60.0)
-            print(f"User's response: {response.content}")
-            user_answer = answer_dict.get(response.content.upper())
-            if user_answer == correct_answer:
-                await response.channel.send(f"{response.author.mention}, correct!")
-            else:
-                await response.channel.send(
-                    f"{response.author.mention}, sorry, the correct answer was {correct_answer}."
-                )
+            elapsed_time = asyncio.get_event_loop().time() - start_time
+            remaining_timeout = max(0, total_timeout - elapsed_time)
 
-            answered_users.add(response.author.id)
+            if remaining_timeout <= 0:
+                logger.info("Poll duration expired.")
+                break
+
+            # Wait for a reaction with a timeout of up to 30 seconds or the remaining timeout
+            reaction, user = await asyncio.wait_for(
+                bot.wait_for(
+                    "reaction_add", check=lambda r, u: check_reaction(r, u, message)
+                ),
+                timeout=min(reaction_wait_timeout, remaining_timeout),
+            )
+            logger.info(f"Reaction received: {reaction.emoji} from {user.name}")
+            await process_reaction(reaction, user, channel)
+
         except asyncio.TimeoutError:
-            print("TimeoutError")
-            await interaction.channel.send("Time's up!")
-            break
+            # logs timeouts but won't break the loop
+            logger.info("Waiting for more reactions...")
+
+    logger.info("handle_reactions ended.")
+
+
+def check_reaction(reaction, user, message):
+    return (
+        str(reaction.emoji) in ["✅", "❌"]
+        and reaction.message.id == message.id
+        and user.id not in poll_responses["responded_users"]
+    )
+
+
+async def process_reaction(reaction, user, channel):
+    if str(reaction.emoji) == "✅":
+        poll_responses["available"] += 1
+    elif str(reaction.emoji) == "❌":
+        poll_responses["unavailable"] += 1
+
+    poll_responses["responded_users"].add(user.id)
+    logger.info(
+        f"Processed reaction: {reaction.emoji} from {user.name}. Available: {poll_responses['available']}, Unavailable: {poll_responses['unavailable']}"
+    )
+
+    if poll_responses["available"] >= 6:
+        await channel.send("@everyone We have enough people for the raid tonight!")
+        logger.info("Enough people for the raid tonight.")
+
+
+@bot.slash_command(name="checkpoll", description="Check the current poll status")
+async def check_poll(interaction: nextcord.Interaction):
+    available = poll_responses["available"]
+    unavailable = poll_responses["unavailable"]
+    await interaction.response.send_message(
+        f"Poll Status:\nAvailable: {available}\nUnavailable: {unavailable}",
+        ephemeral=False,
+    )
+
+
+@bot.slash_command(name="raidpoll", description="Start a raid availability poll")
+async def start_raid_poll(interaction: nextcord.Interaction):
+    await interaction.response.defer()
+    logger.info("Interaction deferred.")
+
+    guild = bot.get_guild(interaction.guild_id)
+    if guild is None:
+        await interaction.followup.send(
+            "Error: Bot is not in the guild associated with this command.",
+            ephemeral=True,
+        )
+        logger.error("Guild not found.")
+        return
+
+    channel = nextcord.utils.get(guild.text_channels, name="general")
+    if channel is None:
+        await interaction.followup.send(
+            "Error: Channel 'general' not found in the guild.", ephemeral=True
+        )
+        logger.error("Channel 'general' not found.")
+        return
+
+    message_content = (
+        "Availability for raid tonight:\n"
+        "React with ✅ for Available and ❌ for Unavailable."
+    )
+    message = await channel.send(message_content)
+    await message.add_reaction("✅")
+    await message.add_reaction("❌")
+    logger.info("Poll message sent and reactions added.")
+
+    # Reset poll responses
+    poll_responses["available"] = 0
+    poll_responses["unavailable"] = 0
+    poll_responses["responded_users"].clear()
+
+    # Start handling reactions
+    asyncio.create_task(handle_reactions(message, channel))
+    logger.info("Reactions handling started.")
+
+    await interaction.followup.send(
+        "Raid availability poll has been successfully started!"
+    )
+    logger.info("Follow-up message sent.")
+
+
+# Time to send the daily poll
+scheduler.add_job(send_daily_poll, "cron", hour=12, minute=0)
 
 
 @bot.event
 async def on_ready():
-    print("Logged in as", bot.user)
+    logger.info(f"Logged in as {bot.user}")
+    scheduler.start()
 
 
 bot.run(DISCORD_BOT_TOKEN)
