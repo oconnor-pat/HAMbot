@@ -20,3 +20,7 @@ tzdata==2023.3
 urllib3==2.2.1
 yarl==1.9.4
 discord-py-slash-command==4.2.1
+nextcord
+apscheduler
+
+
