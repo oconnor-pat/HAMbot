@@ -11,7 +11,7 @@ Provides slash commands to start a new poll, check the current poll status, and 
 
 Requirements
 Python 3.8+
-nextcord
+next-cord
 python-dotenv
 apscheduler
 
