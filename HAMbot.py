@@ -1,12 +1,12 @@
-import asyncio
-import os
-import logging
 from dotenv import load_dotenv
 import nextcord
 from nextcord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import asyncio
+import os
+import logging
 
-# Configure logging
+# Config logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -24,16 +24,26 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Initializes the scheduler
 scheduler = AsyncIOScheduler()
 
-poll_responses = {"available": 0, "unavailable": 0, "responded_users": set()}
+# Modifies the poll_responses to track each user's response
+poll_responses = {"available": [], "unavailable": [], "responded_users": set()}
 
 
 # Function to send the daily poll
 async def send_daily_poll():
-    guild = bot.get_guild(GUILD_IDS[0])  # Assuming only one guild
-    channel = nextcord.utils.get(guild.text_channels, name="general")
-    if channel is None:
-        logger.error("Channel 'general' not found")
-        return
+    for guild_id in GUILD_IDS:
+        guild = bot.get_guild(guild_id)
+        if guild is None:
+            logger.error(f"Guild with ID {guild_id} not found")
+            continue
+
+        channel = nextcord.utils.get(guild.text_channels, name="general")
+        if channel is None:
+            logger.error("Channel 'general' not found in guild ID " + str(guild_id))
+            continue
+
+        await channel.send(
+            "Availability for raid tonight:\nReact with ✅ for Available and ❌ for Unavailable."
+        )
 
     message = await channel.send(
         "Availability for raid tonight:\nReact with ✅ for Available and ❌ for Unavailable."
@@ -42,11 +52,11 @@ async def send_daily_poll():
     await message.add_reaction("❌")
 
     # Reset poll responses
-    poll_responses["available"] = 0
-    poll_responses["unavailable"] = 0
+    poll_responses["available"].clear()
+    poll_responses["unavailable"].clear()
     poll_responses["responded_users"].clear()
 
-    # Start handling reactions
+    # Starts handling reactions
     asyncio.create_task(handle_reactions(message, channel))
 
 
@@ -65,7 +75,7 @@ async def handle_reactions(message, channel):
                 logger.info("Poll duration expired.")
                 break
 
-            # Wait for a reaction with a timeout of up to 30 seconds or the remaining timeout
+            # Waits for a reaction with a timeout of up to 30 seconds or the remaining timeout
             reaction, user = await asyncio.wait_for(
                 bot.wait_for(
                     "reaction_add", check=lambda r, u: check_reaction(r, u, message)
@@ -76,40 +86,50 @@ async def handle_reactions(message, channel):
             await process_reaction(reaction, user, channel)
 
         except asyncio.TimeoutError:
-            # logs timeouts but won't break the loop
+            # logs timeouts
             logger.info("Waiting for more reactions...")
 
     logger.info("handle_reactions ended.")
 
 
+# Updates the check_reaction function to allow reactions from users who have already responded
 def check_reaction(reaction, user, message):
-    return (
-        str(reaction.emoji) in ["✅", "❌"]
-        and reaction.message.id == message.id
-        and user.id not in poll_responses["responded_users"]
-    )
+    return str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == message.id
 
 
+# Modifies the function to allow users to change their response
 async def process_reaction(reaction, user, channel):
-    if str(reaction.emoji) == "✅":
-        poll_responses["available"] += 1
-    elif str(reaction.emoji) == "❌":
-        poll_responses["unavailable"] += 1
+    # Removes the user's previous response if they have already responded
+    if user.id in poll_responses["responded_users"]:
+        if user.id in poll_responses["available"]:
+            poll_responses["available"].remove(user.id)
+        elif user.id in poll_responses["unavailable"]:
+            poll_responses["unavailable"].remove(user.id)
 
+    # Adds the user's new response
+    if str(reaction.emoji) == "✅":
+        poll_responses["available"].append(user.id)
+    elif str(reaction.emoji) == "❌":
+        poll_responses["unavailable"].append(user.id)
+
+    # Ensures the user is marked as having responded
     poll_responses["responded_users"].add(user.id)
+
+    # Logs the updated counts
     logger.info(
-        f"Processed reaction: {reaction.emoji} from {user.name}. Available: {poll_responses['available']}, Unavailable: {poll_responses['unavailable']}"
+        f"Processed reaction: {reaction.emoji} from {user.name}. Available: {len(poll_responses['available'])}, Unavailable: {len(poll_responses['unavailable'])}"
     )
 
-    if poll_responses["available"] >= 6:
+    # Checks if enough people are available
+    if len(poll_responses["available"]) >= 6:
         await channel.send("@everyone We have enough people for the raid tonight!")
         logger.info("Enough people for the raid tonight.")
 
 
 @bot.slash_command(name="checkpoll", description="Check the current poll status")
 async def check_poll(interaction: nextcord.Interaction):
-    available = poll_responses["available"]
-    unavailable = poll_responses["unavailable"]
+    available = len(poll_responses["available"])
+    unavailable = len(poll_responses["unavailable"])
     await interaction.response.send_message(
         f"Poll Status:\nAvailable: {available}\nUnavailable: {unavailable}",
         ephemeral=False,
@@ -148,8 +168,8 @@ async def start_raid_poll(interaction: nextcord.Interaction):
     logger.info("Poll message sent and reactions added.")
 
     # Reset poll responses
-    poll_responses["available"] = 0
-    poll_responses["unavailable"] = 0
+    poll_responses["available"].clear()
+    poll_responses["unavailable"].clear()
     poll_responses["responded_users"].clear()
 
     # Start handling reactions
@@ -160,6 +180,21 @@ async def start_raid_poll(interaction: nextcord.Interaction):
         "Raid availability poll has been successfully started!"
     )
     logger.info("Follow-up message sent.")
+
+
+# slash command to reset to poll and it's responses
+@bot.slash_command(
+    name="resetpoll", description="Reset the current poll and clear all responses"
+)
+async def reset_poll(interaction: nextcord.Interaction):
+    # Clears the poll responses
+    poll_responses["available"].clear()
+    poll_responses["unavailable"].clear()
+    poll_responses["responded_users"].clear()
+
+    # Sends a confirmation message
+    await interaction.response.send_message("The poll has been reset.", ephemeral=False)
+    logger.info("Poll reset.")
 
 
 # Time to send the daily poll
