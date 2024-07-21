@@ -41,23 +41,19 @@ async def send_daily_poll():
             logger.error("Channel 'general' not found in guild ID " + str(guild_id))
             continue
 
-        await channel.send(
+        message = await channel.send(
             "Availability for raid tonight:\nReact with ✅ for Available and ❌ for Unavailable."
         )
+        await message.add_reaction("✅")
+        await message.add_reaction("❌")
 
-    message = await channel.send(
-        "Availability for raid tonight:\nReact with ✅ for Available and ❌ for Unavailable."
-    )
-    await message.add_reaction("✅")
-    await message.add_reaction("❌")
+        # Reset poll responses
+        poll_responses["available"].clear()
+        poll_responses["unavailable"].clear()
+        poll_responses["responded_users"].clear()
 
-    # Reset poll responses
-    poll_responses["available"].clear()
-    poll_responses["unavailable"].clear()
-    poll_responses["responded_users"].clear()
-
-    # Starts handling reactions
-    asyncio.create_task(handle_reactions(message, channel))
+        # Starts handling reactions
+        asyncio.create_task(handle_reactions(message, channel))
 
 
 async def handle_reactions(message, channel):
