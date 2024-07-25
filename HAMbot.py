@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Load env variables
 load_dotenv()
 APPLICATION_ID = os.getenv("APPLICATION_ID")
-GUILD_IDS = [int(guild_id) for guild_id in os.getenv("GUILD_IDS").split(",")]
+GUILD_IDS = [int(guild_id.strip()) for guild_id in os.getenv("GUILD_IDS").split(",")]
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 intents = nextcord.Intents.default()
