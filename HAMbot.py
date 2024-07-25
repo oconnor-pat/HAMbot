@@ -86,6 +86,11 @@ async def handle_reactions(message, channel):
             # logs timeouts
             logger.info("Waiting for more reactions...")
 
+            # Checks if there are enough people available
+    if len(poll_responses["available"]) < 6:
+        await channel.send("Not enough people tonight, try again tomorrow!")
+        logger.info("Not enough people for the raid tonight.")
+
     logger.info("handle_reactions ended.")
 
 
