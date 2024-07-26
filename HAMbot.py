@@ -5,6 +5,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 import os
 import logging
+from pytz import timezone
 
 # Config logging
 logging.basicConfig(
@@ -24,6 +25,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Initializes the scheduler
 scheduler = AsyncIOScheduler()
+
+# Establishes EST timezone
+est = timezone("US/Eastern")
 
 # Modifies the poll_responses to track each user's response
 poll_responses = {"available": [], "unavailable": [], "responded_users": set()}
@@ -200,7 +204,7 @@ async def reset_poll(interaction: nextcord.Interaction):
 
 
 # Time to send the daily poll
-scheduler.add_job(send_daily_poll, "cron", hour=12, minute=0)
+scheduler.add_job(send_daily_poll, "cron", hour=12, minute=0, timezone=est)
 
 
 @bot.event
