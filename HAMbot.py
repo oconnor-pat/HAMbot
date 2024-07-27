@@ -62,7 +62,7 @@ async def send_daily_poll():
         # Starts handling reactions
         asyncio.create_task(handle_reactions(message, channel))
 
-
+# Processes each users reponse to the poll
 async def handle_reactions(message, channel):
     logger.info("handle_reactions started.")
     start_time = asyncio.get_event_loop().time()
@@ -78,7 +78,6 @@ async def handle_reactions(message, channel):
                 logger.info("Poll duration expired.")
                 break
 
-            # Waits for a reaction with a timeout of up to 30 seconds or the remaining timeout
             reaction, user = await asyncio.wait_for(
                 bot.wait_for(
                     "reaction_add", check=lambda r, u: check_reaction(r, u, message)
@@ -107,30 +106,31 @@ def check_reaction(reaction, user, message):
     return str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == message.id
 
 
-# Modifies the function to allow users to change their response
+# Handles users changing reactions
 async def process_reaction(reaction, user, channel):
-    # Removes the user's previous response if they have already responded
+    if user.id == bot.user.id:
+        return  # Ignores bot's own reactions
+
     if user.id in poll_responses["responded_users"]:
         if user.id in poll_responses["available"]:
             poll_responses["available"].remove(user.id)
         elif user.id in poll_responses["unavailable"]:
             poll_responses["unavailable"].remove(user.id)
 
-    # Adds the user's new response
+    # Adds the users new response
     if str(reaction.emoji) == "✅":
         poll_responses["available"].append(user.id)
     elif str(reaction.emoji) == "❌":
         poll_responses["unavailable"].append(user.id)
 
-    # Ensures the user is marked as having responded
+    # Ensures user ID is marked as having responded
     poll_responses["responded_users"].add(user.id)
-
-    # Logs the updated counts
+    
+    # logs the updated counts
     logger.info(
         f"Processed reaction: {reaction.emoji} from {user.name}. Available: {len(poll_responses['available'])}, Unavailable: {len(poll_responses['unavailable'])}"
     )
 
-    # Checks if enough people are available
     if len(poll_responses["available"]) >= 6:
         await channel.send("@everyone We have enough people for the raid tonight!")
         logger.info("Enough people for the raid tonight.")
