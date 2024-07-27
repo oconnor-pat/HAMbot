@@ -1,6 +1,8 @@
 from dotenv import load_dotenv
 import nextcord
 from nextcord.ext import commands
+from nextcord import Interaction, ButtonStyle, SelectOption
+from nextcord.ui import Button, View, Select
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 import os
@@ -87,13 +89,15 @@ async def handle_reactions(message, channel):
             await process_reaction(reaction, user, channel)
 
         except asyncio.TimeoutError:
-            # logs timeouts
             logger.info("Waiting for more reactions...")
 
-            # Checks if there are enough people available
+    # After the poll ends, checks if there are enough people available
     if len(poll_responses["available"]) < 6:
         await channel.send("Not enough people tonight, try again tomorrow!")
         logger.info("Not enough people for the raid tonight.")
+    else:
+        await channel.send("@everyone We have enough people for the raid tonight!")
+        logger.info("Enough people for the raid tonight.")
 
     logger.info("handle_reactions ended.")
 
@@ -213,4 +217,86 @@ async def on_ready():
     scheduler.start()
 
 
+class FireteamView(View):
+    def __init__(self, slots, activity):
+        super().__init__(timeout=None)
+        self.slots = slots
+        self.activity = activity
+        self.roster = [None] * slots
+
+        for i in range(slots):
+            button = Button(
+                label=f"Slot {i + 1}", style=ButtonStyle.blurple, custom_id=f"slot_{i}"
+            )
+            button.callback = self.create_callback(i)
+            self.add_item(button)
+
+    def create_callback(self, index):
+        async def callback(interaction: Interaction):
+            user = interaction.user
+            if user.name in self.roster:
+                await interaction.response.send_message(
+                    "You are already in the roster.", ephemeral=True
+                )
+                return
+            if self.roster[index] is not None:
+                await interaction.response.send_message(
+                    "This slot is already taken.", ephemeral=True
+                )
+                return
+
+            self.roster[index] = user.name
+            self.children[index].label = user.name
+            await interaction.response.edit_message(view=self)
+
+        return callback
+
+
+class SelectActivityView(View):
+    def __init__(self, slots):
+        super().__init__(timeout=None)
+        self.slots = slots
+        self.selected_activity = None
+        select = Select(
+            placeholder="Choose an activity...",
+            options=[
+                SelectOption(label="Raid", value="Raid"),
+                SelectOption(label="Nightfall", value="Nightfall"),
+                SelectOption(label="Dungeon", value="Dungeon"),
+                SelectOption(label="Crucible", value="Crucible"),
+                SelectOption(label="Strikes", value="Strikes"),
+                SelectOption(label="Gambit", value="Gambit"),
+                SelectOption(label="Seasonal Activity", value="Seasonal Activity"),
+                SelectOption(label="Exotic Mission", value="Exotic Mission"),
+                SelectOption(label="Dual Destiny", value="Dual Destiny"),
+            ],
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: Interaction):
+        self.selected_activity = interaction.data["values"][0]
+        await interaction.response.send_message(
+            f"You selected {self.selected_activity}.", ephemeral=True
+        )
+        await interaction.followup.send(
+            f"Fireteam Roster for {self.selected_activity}:\n"
+            + "\n".join([f"Slot {i + 1}: Empty" for i in range(self.slots)]),
+            view=FireteamView(self.slots, self.selected_activity),
+        )
+
+
+@bot.slash_command(name="getfireteam", description="Create a fireteam roster")
+async def getfireteam(interaction: Interaction, slots: int):
+    if slots < 2 or slots > 6:
+        await interaction.response.send_message(
+            "The number of slots must be between 2 and 6.", ephemeral=True
+        )
+        return
+
+    view = SelectActivityView(slots)
+    await interaction.response.send_message("Please select the activity:", view=view)
+
+
+# Runs the bot with the token
 bot.run(DISCORD_BOT_TOKEN)
