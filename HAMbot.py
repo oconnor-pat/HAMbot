@@ -62,7 +62,8 @@ async def send_daily_poll():
         # Starts handling reactions
         asyncio.create_task(handle_reactions(message, channel))
 
-# Processes each users reponse to the poll
+
+# Processes each user's response to the poll
 async def handle_reactions(message, channel):
     logger.info("handle_reactions started.")
     start_time = asyncio.get_event_loop().time()
@@ -117,7 +118,7 @@ async def process_reaction(reaction, user, channel):
         elif user.id in poll_responses["unavailable"]:
             poll_responses["unavailable"].remove(user.id)
 
-    # Adds the users new response
+    # Adds the user's new response
     if str(reaction.emoji) == "✅":
         poll_responses["available"].append(user.id)
     elif str(reaction.emoji) == "❌":
@@ -125,8 +126,8 @@ async def process_reaction(reaction, user, channel):
 
     # Ensures user ID is marked as having responded
     poll_responses["responded_users"].add(user.id)
-    
-    # logs the updated counts
+
+    # Logs the updated counts
     logger.info(
         f"Processed reaction: {reaction.emoji} from {user.name}. Available: {len(poll_responses['available'])}, Unavailable: {len(poll_responses['unavailable'])}"
     )
@@ -135,7 +136,7 @@ async def process_reaction(reaction, user, channel):
         await channel.send("@everyone We have enough people for the raid tonight!")
         logger.info("Enough people for the raid tonight.")
 
-
+# Command to check the raid poll response count
 @bot.slash_command(name="checkpoll", description="Check the current poll status")
 async def check_poll(interaction: nextcord.Interaction):
     available = len(poll_responses["available"])
@@ -145,7 +146,7 @@ async def check_poll(interaction: nextcord.Interaction):
         ephemeral=False,
     )
 
-
+# Command to manually launch the raid poll
 @bot.slash_command(name="raidpoll", description="Start a raid availability poll")
 async def start_raid_poll(interaction: nextcord.Interaction):
     await interaction.response.defer()
@@ -192,7 +193,7 @@ async def start_raid_poll(interaction: nextcord.Interaction):
     logger.info("Follow-up message sent.")
 
 
-# slash command to reset to poll and it's responses
+# Command to reset the poll and its responses
 @bot.slash_command(
     name="resetpoll", description="Reset the current poll and clear all responses"
 )
@@ -253,11 +254,10 @@ class FireteamView(View):
 
 
 class SelectActivityView(View):
-    def __init__(self, slots):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.slots = slots
         self.selected_activity = None
-        select = Select(
+        self.select = Select(
             placeholder="Choose an activity...",
             options=[
                 SelectOption(label="Raid", value="Raid"),
@@ -271,30 +271,68 @@ class SelectActivityView(View):
                 SelectOption(label="Dual Destiny", value="Dual Destiny"),
             ],
         )
-        select.callback = self.select_callback
-        self.add_item(select)
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
 
     async def select_callback(self, interaction: Interaction):
         self.selected_activity = interaction.data["values"][0]
         await interaction.response.send_message(
             f"You selected {self.selected_activity}.", ephemeral=True
         )
+        # Request the number of slots
         await interaction.followup.send(
-            f"Fireteam Roster for {self.selected_activity}:\n"
-            + "\n".join([f"Slot {i + 1}: Empty" for i in range(self.slots)]),
-            view=FireteamView(self.slots, self.selected_activity),
+            f"Please specify the number of slots for {self.selected_activity}.",
+            view=SlotSelectionView(self.selected_activity),
         )
+
+
+class SlotSelectionView(View):
+    def __init__(self, activity):
+        super().__init__(timeout=None)
+        self.activity = activity
+        self.slot_buttons = [
+            Button(label=str(i), style=ButtonStyle.blurple, custom_id=f"slot_{i}")
+            for i in range(2, 7)
+        ]
+        for button in self.slot_buttons:
+            button.callback = self.create_callback(button.label)
+            self.add_item(button)
+
+    def create_callback(self, slot):
+        async def callback(interaction: Interaction):
+            slots = int(slot)
+
+            # Enforce strict requirement for "Dual Destiny"
+            if self.activity == "Dual Destiny" and slots != 2:
+                await interaction.response.send_message(
+                    "The 'Dual Destiny' activity requires exactly 2 slots.",
+                    ephemeral=True,
+                )
+                return
+
+            # Check for valid slot number
+            if slots < 2 or slots > 6:
+                await interaction.response.send_message(
+                    "The number of slots must be between 2 and 6.", ephemeral=True
+                )
+                return
+
+            await interaction.response.edit_message(
+                content=f"Creating fireteam for {self.activity} with {slots} slots...",
+                view=None,
+            )
+            await interaction.followup.send(
+                f"Fireteam Roster for {self.activity}:\n"
+                + "\n".join([f"Slot {i + 1}: Empty" for i in range(slots)]),
+                view=FireteamView(slots, self.activity),
+            )
+
+        return callback
 
 
 @bot.slash_command(name="getfireteam", description="Create a fireteam roster")
-async def getfireteam(interaction: Interaction, slots: int):
-    if slots < 2 or slots > 6:
-        await interaction.response.send_message(
-            "The number of slots must be between 2 and 6.", ephemeral=True
-        )
-        return
-
-    view = SelectActivityView(slots)
+async def getfireteam(interaction: Interaction):
+    view = SelectActivityView()
     await interaction.response.send_message("Please select the activity:", view=view)
 
 
