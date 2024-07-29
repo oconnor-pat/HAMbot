@@ -71,14 +71,14 @@ async def handle_reactions(message, channel):
     reaction_wait_timeout = 30.0  # 30 seconds
 
     while True:
+        elapsed_time = asyncio.get_event_loop().time() - start_time
+        remaining_timeout = max(0, total_timeout - elapsed_time)
+
+        if remaining_timeout <= 0:
+            logger.info("Poll duration expired.")
+            break
+
         try:
-            elapsed_time = asyncio.get_event_loop().time() - start_time
-            remaining_timeout = max(0, total_timeout - elapsed_time)
-
-            if remaining_timeout <= 0:
-                logger.info("Poll duration expired.")
-                break
-
             reaction, user = await asyncio.wait_for(
                 bot.wait_for(
                     "reaction_add", check=lambda r, u: check_reaction(r, u, message)
@@ -91,15 +91,18 @@ async def handle_reactions(message, channel):
         except asyncio.TimeoutError:
             logger.info("Waiting for more reactions...")
 
-    # After the poll ends, checks if there are enough people available
+    # After the poll ends, check if there are enough people available
+    await finalize_poll(channel)
+    logger.info("handle_reactions ended.")
+
+
+async def finalize_poll(channel):
     if len(poll_responses["available"]) < 6:
         await channel.send("Not enough people tonight, try again tomorrow!")
         logger.info("Not enough people for the raid tonight.")
     else:
         await channel.send("@everyone We have enough people for the raid tonight!")
         logger.info("Enough people for the raid tonight.")
-
-    logger.info("handle_reactions ended.")
 
 
 # Updates the check_reaction function to allow reactions from users who have already responded
@@ -136,6 +139,7 @@ async def process_reaction(reaction, user, channel):
         await channel.send("@everyone We have enough people for the raid tonight!")
         logger.info("Enough people for the raid tonight.")
 
+
 # Command to check the raid poll response count
 @bot.slash_command(name="checkpoll", description="Check the current poll status")
 async def check_poll(interaction: nextcord.Interaction):
@@ -145,6 +149,7 @@ async def check_poll(interaction: nextcord.Interaction):
         f"Poll Status:\nAvailable: {available}\nUnavailable: {unavailable}",
         ephemeral=False,
     )
+
 
 # Command to manually launch the raid poll
 @bot.slash_command(name="raidpoll", description="Start a raid availability poll")
