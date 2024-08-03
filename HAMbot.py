@@ -35,7 +35,12 @@ est = timezone("US/Eastern")
 
 # Poll responses storage
 poll_responses = {
-    guild_id: {"available": [], "unavailable": [], "responded_users": set()}
+    guild_id: {
+        "available": [],
+        "unavailable": [],
+        "could_be_convinced": [],
+        "responded_users": set(),
+    }
     for guild_id in GUILD_IDS
 }
 
@@ -54,20 +59,29 @@ async def send_daily_poll():
             continue
 
         message = await channel.send(
-            "Availability for raid tonight:\nReact with ✅ for Available and ❌ for Unavailable."
+            "Availability for raid tonight:\nReact with ✅ for Available, ❌ for Unavailable, or 🤷 if you could be convinced."
         )
         await message.add_reaction("✅")
         await message.add_reaction("❌")
+        await message.add_reaction("🤷")
 
         # Reset poll responses
         poll_responses[guild_id] = {
             "available": [],
             "unavailable": [],
+            "could_be_convinced": [],
             "responded_users": set(),
         }
 
-        # Starts handling reactions
+        # Start handling reactions
         asyncio.create_task(handle_reactions(message, channel, guild_id))
+
+
+# Check if the reaction is valid
+def check_reaction(reaction, user, message):
+    return (
+        str(reaction.emoji) in ["✅", "❌", "🤷"] and reaction.message.id == message.id
+    )
 
 
 # Processes each user's response to the poll
@@ -114,11 +128,7 @@ async def finalize_poll(channel, guild_id):
 
 
 # Check if the reaction is valid
-def check_reaction(reaction, user, message):
-    return str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == message.id
-
-
-# Handles users changing reactions
+# Check if the reaction is valid
 async def process_reaction(reaction, user, channel, guild_id):
     if user.id == bot.user.id:
         return  # Ignores bot's own reactions
@@ -133,6 +143,9 @@ async def process_reaction(reaction, user, channel, guild_id):
         elif user.id in poll_responses[guild_id]["unavailable"]:
             old_emoji = "❌"
             poll_responses[guild_id]["unavailable"].remove(user.id)
+        elif user.id in poll_responses[guild_id]["could_be_convinced"]:
+            old_emoji = "🤷"
+            poll_responses[guild_id]["could_be_convinced"].remove(user.id)
 
         # Remove old reaction from the message
         if old_emoji:
@@ -143,6 +156,8 @@ async def process_reaction(reaction, user, channel, guild_id):
         poll_responses[guild_id]["available"].append(user.id)
     elif str(reaction.emoji) == "❌":
         poll_responses[guild_id]["unavailable"].append(user.id)
+    elif str(reaction.emoji) == "🤷":
+        poll_responses[guild_id]["could_be_convinced"].append(user.id)
 
     # Ensure user ID is marked as having responded
     poll_responses[guild_id]["responded_users"].add(user.id)
@@ -150,8 +165,9 @@ async def process_reaction(reaction, user, channel, guild_id):
     # Logs the updated counts
     available_count = len(poll_responses[guild_id]["available"])
     unavailable_count = len(poll_responses[guild_id]["unavailable"])
+    could_be_convinced_count = len(poll_responses[guild_id]["could_be_convinced"])
     logger.info(
-        f"Processed reaction: {reaction.emoji} from {user.name}. Available: {available_count}, Unavailable: {unavailable_count}"
+        f"Processed reaction: {reaction.emoji} from {user.name}. Available: {available_count}, Unavailable: {unavailable_count}, Could be convinced: {could_be_convinced_count}"
     )
 
     # Notify if enough people are available
@@ -166,8 +182,12 @@ async def check_poll(interaction: nextcord.Interaction):
     guild_id = interaction.guild_id
     available = len(poll_responses[guild_id]["available"])
     unavailable = len(poll_responses[guild_id]["unavailable"])
+    could_be_convinced = len(poll_responses[guild_id]["could_be_convinced"])
+    logger.info(
+        f"Checking poll status: Available: {available}, Unavailable: {unavailable}, Could be convinced: {could_be_convinced}"
+    )
     await interaction.response.send_message(
-        f"Poll Status:\nAvailable: {available}\nUnavailable: {unavailable}",
+        f"Poll Status:\nAvailable: {available}\nUnavailable: {unavailable}\nCould be convinced: {could_be_convinced}",
         ephemeral=False,
     )
 
@@ -198,17 +218,19 @@ async def start_raid_poll(interaction: nextcord.Interaction):
 
     message_content = (
         "Availability for raid tonight:\n"
-        "React with ✅ for Available and ❌ for Unavailable."
+        "React with ✅ for Available, ❌ for Unavailable, or 🤷 for Could be convinced."
     )
     message = await channel.send(message_content)
     await message.add_reaction("✅")
     await message.add_reaction("❌")
+    await message.add_reaction("🤷")
     logger.info("Poll message sent and reactions added.")
 
     # Reset poll responses
     poll_responses[guild_id] = {
         "available": [],
         "unavailable": [],
+        "could_be_convinced": [],
         "responded_users": set(),
     }
 
@@ -232,6 +254,7 @@ async def reset_poll(interaction: nextcord.Interaction):
     poll_responses[guild_id] = {
         "available": [],
         "unavailable": [],
+        "could_be_convinced": [],
         "responded_users": set(),
     }
 
