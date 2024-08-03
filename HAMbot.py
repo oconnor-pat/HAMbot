@@ -71,7 +71,6 @@ async def handle_reactions(message, channel, guild_id):
     logger.info("handle_reactions started.")
     start_time = asyncio.get_event_loop().time()
     total_timeout = 18000.0  # 5 hours in seconds
-    reaction_wait_timeout = 30.0  # 30 seconds
 
     while True:
         elapsed_time = asyncio.get_event_loop().time() - start_time
@@ -82,16 +81,18 @@ async def handle_reactions(message, channel, guild_id):
             break
 
         try:
+            # Waits for a reaction with a timeout that dynamically adjusts
             reaction, user = await asyncio.wait_for(
                 bot.wait_for(
                     "reaction_add", check=lambda r, u: check_reaction(r, u, message)
                 ),
-                timeout=min(reaction_wait_timeout, remaining_timeout),
+                timeout=min(30.0, remaining_timeout),
             )
             logger.info(f"Reaction received: {reaction.emoji} from {user.name}")
             await process_reaction(reaction, user, channel, guild_id)
 
         except asyncio.TimeoutError:
+            # If a timeout occurs, continue waiting for more reactions
             logger.info("Waiting for more reactions...")
 
     # After the poll ends, check if there are enough people available
