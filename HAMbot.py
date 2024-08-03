@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 # Load env variables
 load_dotenv()
 APPLICATION_ID = os.getenv("APPLICATION_ID")
-GUILD_IDS = [int(guild_id.strip()) for guild_id in os.getenv("GUILD_IDS").split(",")]
+GUILD_IDS = [
+    int(guild_id.strip()) for guild_id in os.getenv("GUILD_IDS", "").split(",")
+]
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 intents = nextcord.Intents.default()
@@ -31,7 +33,7 @@ scheduler = AsyncIOScheduler()
 # Establishes EST timezone
 est = timezone("US/Eastern")
 
-# Modifies the poll_responses to track each guild's poll responses
+# Poll responses storage
 poll_responses = {
     guild_id: {"available": [], "unavailable": [], "responded_users": set()}
     for guild_id in GUILD_IDS
@@ -48,7 +50,7 @@ async def send_daily_poll():
 
         channel = nextcord.utils.get(guild.text_channels, name="general")
         if channel is None:
-            logger.error("Channel 'general' not found in guild ID " + str(guild_id))
+            logger.error(f"Channel 'general' not found in guild ID {guild_id}")
             continue
 
         message = await channel.send(
@@ -58,9 +60,11 @@ async def send_daily_poll():
         await message.add_reaction("❌")
 
         # Reset poll responses
-        poll_responses[guild_id]["available"].clear()
-        poll_responses[guild_id]["unavailable"].clear()
-        poll_responses[guild_id]["responded_users"].clear()
+        poll_responses[guild_id] = {
+            "available": [],
+            "unavailable": [],
+            "responded_users": set(),
+        }
 
         # Starts handling reactions
         asyncio.create_task(handle_reactions(message, channel, guild_id))
@@ -68,7 +72,7 @@ async def send_daily_poll():
 
 # Processes each user's response to the poll
 async def handle_reactions(message, channel, guild_id):
-    logger.info("handle_reactions started.")
+    logger.info("Handling reactions started.")
     start_time = asyncio.get_event_loop().time()
     total_timeout = 18000.0  # 5 hours in seconds
 
@@ -81,7 +85,6 @@ async def handle_reactions(message, channel, guild_id):
             break
 
         try:
-            # Waits for a reaction with a timeout that dynamically adjusts
             reaction, user = await asyncio.wait_for(
                 bot.wait_for(
                     "reaction_add", check=lambda r, u: check_reaction(r, u, message)
@@ -92,16 +95,17 @@ async def handle_reactions(message, channel, guild_id):
             await process_reaction(reaction, user, channel, guild_id)
 
         except asyncio.TimeoutError:
-            # If a timeout occurs, continue waiting for more reactions
             logger.info("Waiting for more reactions...")
 
     # After the poll ends, check if there are enough people available
     await finalize_poll(channel, guild_id)
-    logger.info("handle_reactions ended.")
+    logger.info("Handling reactions ended.")
 
 
+# Finalize the poll results
 async def finalize_poll(channel, guild_id):
-    if len(poll_responses[guild_id]["available"]) < 6:
+    available_count = len(poll_responses[guild_id]["available"])
+    if available_count < 6:
         await channel.send("Not enough people tonight, try again tomorrow!")
         logger.info("Not enough people for the raid tonight.")
     else:
@@ -109,7 +113,7 @@ async def finalize_poll(channel, guild_id):
         logger.info("Enough people for the raid tonight.")
 
 
-# Updates the check_reaction function to allow reactions from users who have already responded
+# Check if the reaction is valid
 def check_reaction(reaction, user, message):
     return str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == message.id
 
@@ -119,27 +123,39 @@ async def process_reaction(reaction, user, channel, guild_id):
     if user.id == bot.user.id:
         return  # Ignores bot's own reactions
 
+    # Ensure user can only have one reaction
     if user.id in poll_responses[guild_id]["responded_users"]:
+        # Remove the user's old response
+        old_emoji = None
         if user.id in poll_responses[guild_id]["available"]:
+            old_emoji = "✅"
             poll_responses[guild_id]["available"].remove(user.id)
         elif user.id in poll_responses[guild_id]["unavailable"]:
+            old_emoji = "❌"
             poll_responses[guild_id]["unavailable"].remove(user.id)
 
-    # Adds the user's new response
+        # Remove old reaction from the message
+        if old_emoji:
+            await reaction.message.remove_reaction(old_emoji, user)
+
+    # Add the user's new response
     if str(reaction.emoji) == "✅":
         poll_responses[guild_id]["available"].append(user.id)
     elif str(reaction.emoji) == "❌":
         poll_responses[guild_id]["unavailable"].append(user.id)
 
-    # Ensures user ID is marked as having responded
+    # Ensure user ID is marked as having responded
     poll_responses[guild_id]["responded_users"].add(user.id)
 
     # Logs the updated counts
+    available_count = len(poll_responses[guild_id]["available"])
+    unavailable_count = len(poll_responses[guild_id]["unavailable"])
     logger.info(
-        f"Processed reaction: {reaction.emoji} from {user.name}. Available: {len(poll_responses[guild_id]['available'])}, Unavailable: {len(poll_responses[guild_id]['unavailable'])}"
+        f"Processed reaction: {reaction.emoji} from {user.name}. Available: {available_count}, Unavailable: {unavailable_count}"
     )
 
-    if len(poll_responses[guild_id]["available"]) >= 6:
+    # Notify if enough people are available
+    if available_count >= 6:
         await channel.send("@everyone We have enough people for the raid tonight!")
         logger.info("Enough people for the raid tonight.")
 
@@ -190,9 +206,11 @@ async def start_raid_poll(interaction: nextcord.Interaction):
     logger.info("Poll message sent and reactions added.")
 
     # Reset poll responses
-    poll_responses[guild_id]["available"].clear()
-    poll_responses[guild_id]["unavailable"].clear()
-    poll_responses[guild_id]["responded_users"].clear()
+    poll_responses[guild_id] = {
+        "available": [],
+        "unavailable": [],
+        "responded_users": set(),
+    }
 
     # Start handling reactions
     asyncio.create_task(handle_reactions(message, channel, guild_id))
@@ -211,9 +229,11 @@ async def start_raid_poll(interaction: nextcord.Interaction):
 async def reset_poll(interaction: nextcord.Interaction):
     guild_id = interaction.guild_id
     # Clears the poll responses
-    poll_responses[guild_id]["available"].clear()
-    poll_responses[guild_id]["unavailable"].clear()
-    poll_responses[guild_id]["responded_users"].clear()
+    poll_responses[guild_id] = {
+        "available": [],
+        "unavailable": [],
+        "responded_users": set(),
+    }
 
     # Sends a confirmation message
     await interaction.response.send_message("The poll has been reset.", ephemeral=False)
