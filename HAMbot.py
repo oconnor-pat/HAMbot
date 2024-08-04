@@ -15,8 +15,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load env variables
-load_dotenv()
+# Determine which .env file to use
+env_file = ".env.prod" if os.getenv("ENV") == "production" else ".env.test"
+load_dotenv(env_file)
+
 APPLICATION_ID = os.getenv("APPLICATION_ID")
 GUILD_IDS = [
     int(guild_id.strip()) for guild_id in os.getenv("GUILD_IDS", "").split(",")
@@ -239,157 +241,18 @@ async def start_raid_poll(interaction: nextcord.Interaction):
     logger.info("Reactions handling started.")
 
     await interaction.followup.send(
-        "Raid availability poll has been successfully started!"
+        "Raid availability poll has been successfully started.", ephemeral=True
     )
-    logger.info("Follow-up message sent.")
+    logger.info("Interaction followup sent.")
 
 
-# Command to reset the poll and its responses
-@bot.slash_command(
-    name="resetpoll", description="Reset the current poll and clear all responses"
-)
-async def reset_poll(interaction: nextcord.Interaction):
-    guild_id = interaction.guild_id
-    # Clears the poll responses
-    poll_responses[guild_id] = {
-        "available": [],
-        "unavailable": [],
-        "could_be_convinced": [],
-        "responded_users": set(),
-    }
-
-    # Sends a confirmation message
-    await interaction.response.send_message("The poll has been reset.", ephemeral=False)
-    logger.info("Poll reset.")
-
-
-# Time to send the daily poll
-scheduler.add_job(send_daily_poll, "cron", hour=12, minute=0, timezone=est)
-
-
+# When the bot is ready
 @bot.event
 async def on_ready():
-    logger.info(f"Logged in as {bot.user}")
+    scheduler.add_job(send_daily_poll, "cron", hour=12, minute=0, timezone=est)
     scheduler.start()
+    logger.info("Bot is ready and scheduler started.")
+    print(f"Logged in as {bot.user.name}")
 
 
-class FireteamView(View):
-    def __init__(self, slots, activity):
-        super().__init__(timeout=None)
-        self.slots = slots
-        self.activity = activity
-        self.roster = [None] * slots
-
-        for i in range(slots):
-            button = Button(
-                label=f"Slot {i + 1}", style=ButtonStyle.blurple, custom_id=f"slot_{i}"
-            )
-            button.callback = self.create_callback(i)
-            self.add_item(button)
-
-    def create_callback(self, index):
-        async def callback(interaction: Interaction):
-            user = interaction.user
-            if user.name in self.roster:
-                await interaction.response.send_message(
-                    "You are already in the roster.", ephemeral=True
-                )
-                return
-            if self.roster[index] is not None:
-                await interaction.response.send_message(
-                    "This slot is already taken.", ephemeral=True
-                )
-                return
-
-            self.roster[index] = user.name
-            self.children[index].label = user.name
-            await interaction.response.edit_message(view=self)
-
-        return callback
-
-
-class SelectActivityView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.selected_activity = None
-        self.select = Select(
-            placeholder="Choose an activity...",
-            options=[
-                SelectOption(label="Raid", value="Raid"),
-                SelectOption(label="Nightfall", value="Nightfall"),
-                SelectOption(label="Dungeon", value="Dungeon"),
-                SelectOption(label="Crucible", value="Crucible"),
-                SelectOption(label="Strikes", value="Strikes"),
-                SelectOption(label="Gambit", value="Gambit"),
-                SelectOption(label="Seasonal Activity", value="Seasonal Activity"),
-                SelectOption(label="Exotic Mission", value="Exotic Mission"),
-                SelectOption(label="Dual Destiny", value="Dual Destiny"),
-            ],
-        )
-        self.select.callback = self.select_callback
-        self.add_item(self.select)
-
-    async def select_callback(self, interaction: Interaction):
-        self.selected_activity = interaction.data["values"][0]
-        await interaction.response.send_message(
-            f"You selected {self.selected_activity}.", ephemeral=True
-        )
-        # Request the number of slots
-        await interaction.followup.send(
-            f"Please specify the number of slots for {self.selected_activity}.",
-            view=SlotSelectionView(self.selected_activity),
-        )
-
-
-class SlotSelectionView(View):
-    def __init__(self, activity):
-        super().__init__(timeout=None)
-        self.activity = activity
-        self.slot_buttons = [
-            Button(label=str(i), style=ButtonStyle.blurple, custom_id=f"slot_{i}")
-            for i in range(2, 7)
-        ]
-        for button in self.slot_buttons:
-            button.callback = self.create_callback(button.label)
-            self.add_item(button)
-
-    def create_callback(self, slot):
-        async def callback(interaction: Interaction):
-            slots = int(slot)
-
-            # Enforce strict requirement for "Dual Destiny"
-            if self.activity == "Dual Destiny" and slots != 2:
-                await interaction.response.send_message(
-                    "The 'Dual Destiny' activity requires exactly 2 slots.",
-                    ephemeral=True,
-                )
-                return
-
-            # Check for valid slot number
-            if slots < 2 or slots > 6:
-                await interaction.response.send_message(
-                    "The number of slots must be between 2 and 6.", ephemeral=True
-                )
-                return
-
-            await interaction.response.edit_message(
-                content=f"Creating fireteam for {self.activity} with {slots} slots...",
-                view=None,
-            )
-            await interaction.followup.send(
-                f"Fireteam Roster for {self.activity}:\n"
-                + "\n".join([f"Slot {i + 1}: Empty" for i in range(slots)]),
-                view=FireteamView(slots, self.activity),
-            )
-
-        return callback
-
-
-@bot.slash_command(name="getfireteam", description="Create a fireteam roster")
-async def getfireteam(interaction: Interaction):
-    view = SelectActivityView()
-    await interaction.response.send_message("Please select the activity:", view=view)
-
-
-# Runs the bot with the token
 bot.run(DISCORD_BOT_TOKEN)
