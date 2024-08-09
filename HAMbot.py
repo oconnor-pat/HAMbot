@@ -119,7 +119,7 @@ async def handle_reactions(message, channel, guild_id):
         except asyncio.TimeoutError:
             logger.info("Waiting for more reactions...")
 
-    # After the poll ends, check if there are enough people available
+    # After the poll ends, this closes it and announces the results
     await finalize_poll(channel, guild_id)
     logger.info("Handling reactions ended.")
 
@@ -128,10 +128,10 @@ async def handle_reactions(message, channel, guild_id):
 async def finalize_poll(channel, guild_id):
     available_count = len(poll_responses[guild_id]["available"])
     if available_count < 6:
-        await channel.send("Not enough people tonight, try again tomorrow!")
+        await channel.send("**Not enough people tonight, try again tomorrow!**")
         logger.info("Not enough people for the raid tonight.")
     else:
-        await channel.send("@everyone We have enough people for the raid tonight!")
+        await channel.send("**@everyone We have enough people for the raid tonight!**")
         logger.info("Enough people for the raid tonight.")
 
 
@@ -249,6 +249,23 @@ async def start_raid_poll(interaction: nextcord.Interaction):
         "Raid availability poll has been successfully started!"
     )
     logger.info("Follow-up message sent.")
+
+
+# Command to manually finalize the poll
+@bot.slash_command(name="finalize_poll", description="Finalize the current raid poll")
+async def finalize_poll_command(interaction: nextcord.Interaction):
+    guild_id = interaction.guild_id
+    channel = nextcord.utils.get(interaction.guild.text_channels, name="general")
+    if channel:
+        # Finalize the poll and send the results to the channel
+        await finalize_poll(channel, guild_id)
+        await interaction.response.send_message(
+            "Poll has been closed, results are:", ephemeral=False
+        )
+    else:
+        await interaction.response.send_message(
+            "Channel 'general' not found.", ephemeral=True
+        )
 
 
 # Command to reset the poll and its responses
