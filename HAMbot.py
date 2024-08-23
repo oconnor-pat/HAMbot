@@ -127,7 +127,12 @@ async def handle_reactions(message, channel, guild_id):
 # Finalize the poll results
 async def finalize_poll(channel, guild_id):
     available_count = len(poll_responses[guild_id]["available"])
-    if available_count < 6:
+    could_be_convinced_count = len(poll_responses[guild_id]["could_be_convinced"])
+
+    # count for available and could be convinced responses added together
+    total_possible = available_count + could_be_convinced_count
+
+    if total_possible < 6:
         await channel.send("**Not enough people tonight, try again tomorrow!**")
         logger.info("Not enough people for the raid tonight.")
     else:
