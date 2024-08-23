@@ -1,4 +1,6 @@
 import os
+import random
+import aiohttp
 import nextcord
 from nextcord.ext import commands
 from nextcord import Interaction, ButtonStyle, SelectOption
@@ -8,6 +10,7 @@ import asyncio
 import logging
 from dotenv import load_dotenv
 from pytz import timezone
+import logging
 
 # Loads environment variables from the appropriate .env file
 env_file = ".env.prod" if os.getenv("ENV") == "production" else ".env.test"
@@ -18,12 +21,20 @@ APPLICATION_ID = os.getenv("APPLICATION_ID")
 GUILD_IDS = [
     int(guild_id.strip()) for guild_id in os.getenv("GUILD_IDS", "").split(",")
 ]
+
+HAKUNA_AHAMKARA = GUILD_IDS[0]
+WHAT_CAN_MEN_DO = (
+    GUILD_IDS[1] if len(GUILD_IDS) > 1 else GUILD_IDS[0]
+)  # Defaults to the first guild if only one is available
+
+TEST_GUILD = GUILD_IDS[0]
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 print("Loaded ENV:", os.getenv("ENV"))
 print("DISCORD_BOT_TOKEN:", os.getenv("DISCORD_BOT_TOKEN"))
 print("GUILD_IDS:", os.getenv("GUILD_IDS"))
 print("APPLICATION_ID:", os.getenv("APPLICATION_ID"))
+print("First GUILD_ID:", WHAT_CAN_MEN_DO)
 
 
 # Config logging
@@ -53,36 +64,70 @@ poll_responses = {
 }
 
 
+async def fetch_trivia_question():
+    url = "https://the-trivia-api.com/api/questions"  # API endpoint to fetch questions
+    params = {
+        "limit": 1,  # Fetch only one question per call
+        "difficulty": "easy",  # Specify the difficulty if required
+        "categories": "general",  # Specify the category if required
+    }
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if (
+                        data and isinstance(data, list) and len(data) > 0
+                    ):  # Check if data is not empty and correctly formatted
+                        return data[0]  # Return the first question object
+                    else:
+                        logging.error("No data returned from the trivia API.")
+                        return None
+                else:
+                    logging.error(
+                        f"Failed to fetch trivia question, HTTP status: {response.status}"
+                    )
+                    return None
+        except Exception as e:
+            logging.error(
+                f"An error occurred while fetching the trivia question: {str(e)}"
+            )
+            return None
+
+
 # Function to send the daily poll
 async def send_daily_poll():
-    for guild_id in GUILD_IDS:
-        guild = bot.get_guild(guild_id)
-        if guild is None:
-            logger.error(f"Guild with ID {guild_id} not found")
-            continue
 
-        channel = nextcord.utils.get(guild.text_channels, name="general")
-        if channel is None:
-            logger.error(f"Channel 'general' not found in guild ID {guild_id}")
-            continue
+    # Server ID for Hakuna Ahamkara
+    guild_id = WHAT_CAN_MEN_DO
 
-        message = await channel.send(
-            "Availability for raid tonight:\nReact with ✅ for Available, ❌ for Unavailable, or 🤷 if you could be convinced."
-        )
-        await message.add_reaction("✅")
-        await message.add_reaction("❌")
-        await message.add_reaction("🤷")
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        logger.error(f"Guild with ID {guild_id} not found")
+        return
 
-        # Reset poll responses
-        poll_responses[guild_id] = {
-            "available": [],
-            "unavailable": [],
-            "could_be_convinced": [],
-            "responded_users": set(),
-        }
+    channel = nextcord.utils.get(guild.text_channels, name="general")
+    if channel is None:
+        logger.error(f"Channel 'general' not found in guild ID {guild_id}")
+        return
 
-        # Start handling reactions
-        asyncio.create_task(handle_reactions(message, channel, guild_id))
+    message = await channel.send(
+        "Availability for raid tonight:\nReact with ✅ for Available, ❌ for Unavailable, or 🤷 if you could be convinced."
+    )
+    await message.add_reaction("✅")
+    await message.add_reaction("❌")
+    await message.add_reaction("🤷")
+
+    # Reset poll responses
+    poll_responses[guild_id] = {
+        "available": [],
+        "unavailable": [],
+        "could_be_convinced": [],
+        "responded_users": set(),
+    }
+
+    # Start handling reactions
+    asyncio.create_task(handle_reactions(message, channel, guild_id))
 
 
 # Check if the reaction is valid
@@ -189,12 +234,18 @@ async def process_reaction(reaction, user, channel, guild_id):
 
 
 # Command to check the raid poll response count
-@bot.slash_command(name="checkpoll", description="Check the current poll status")
+@bot.slash_command(
+    name="checkpoll",
+    description="Check the current poll status",
+    guild_ids=[HAKUNA_AHAMKARA],
+)
 async def check_poll(interaction: nextcord.Interaction):
     guild_id = interaction.guild_id
-    available = len(poll_responses[guild_id]["available"])
-    unavailable = len(poll_responses[guild_id]["unavailable"])
-    could_be_convinced = len(poll_responses[guild_id]["could_be_convinced"])
+    available = len(poll_responses.get(guild_id, {}).get("available", []))
+    unavailable = len(poll_responses.get(guild_id, {}).get("unavailable", []))
+    could_be_convinced = len(
+        poll_responses.get(guild_id, {}).get("could_be_convinced", [])
+    )
     logger.info(
         f"Checking poll status: Available: {available}, Unavailable: {unavailable}, Could be convinced: {could_be_convinced}"
     )
@@ -205,7 +256,11 @@ async def check_poll(interaction: nextcord.Interaction):
 
 
 # Command to manually launch the raid poll
-@bot.slash_command(name="raidpoll", description="Start a raid availability poll")
+@bot.slash_command(
+    name="raidpoll",
+    description="Start a raid availability poll",
+    guild_ids=[HAKUNA_AHAMKARA],
+)
 async def start_raid_poll(interaction: nextcord.Interaction):
     await interaction.response.defer()
     logger.info("Interaction deferred.")
@@ -257,7 +312,11 @@ async def start_raid_poll(interaction: nextcord.Interaction):
 
 
 # Command to manually finalize the poll
-@bot.slash_command(name="finalize_poll", description="Finalize the current raid poll")
+@bot.slash_command(
+    name="finalize_poll",
+    description="Finalize the current raid poll",
+    guild_ids=[HAKUNA_AHAMKARA],
+)
 async def finalize_poll_command(interaction: nextcord.Interaction):
     guild_id = interaction.guild_id
     channel = nextcord.utils.get(interaction.guild.text_channels, name="general")
@@ -275,7 +334,9 @@ async def finalize_poll_command(interaction: nextcord.Interaction):
 
 # Command to reset the poll and its responses
 @bot.slash_command(
-    name="resetpoll", description="Reset the current poll and its responses"
+    name="resetpoll",
+    description="Reset the current poll and its responses",
+    guild_ids=[HAKUNA_AHAMKARA],
 )
 async def reset_poll(interaction: Interaction):
     guild_id = interaction.guild_id
@@ -387,7 +448,7 @@ class SlotSelectionView(View):
         async def callback(interaction: Interaction):
             slots = int(slot)
 
-            # Enforce strict requirement for "Dual Destiny"
+            # Enforces strict requirement for "Dual Destiny"
             if self.activity == "Dual Destiny" and slots != 2:
                 await interaction.response.send_message(
                     "The 'Dual Destiny' activity requires exactly 2 slots.",
@@ -415,10 +476,78 @@ class SlotSelectionView(View):
         return callback
 
 
-@bot.slash_command(name="getfireteam", description="Create a fireteam roster")
+@bot.slash_command(
+    name="getfireteam",
+    description="Create a fireteam roster",
+    guild_ids=[HAKUNA_AHAMKARA],
+)
 async def getfireteam(interaction: Interaction):
     view = SelectActivityView()
     await interaction.response.send_message("Please select the activity:", view=view)
+
+
+# What can men do against such reckless hate server slash commands
+@bot.slash_command(
+    name="trivia",
+    description="Start a trivia game!",
+    guild_ids=[
+        WHAT_CAN_MEN_DO,
+        TEST_GUILD,
+    ],  # Ensures it's available only in specified guilds
+)
+async def trivia(interaction: nextcord.Interaction):
+    question_data = await fetch_trivia_question()
+    if not question_data:
+        await interaction.response.send_message(
+            "Failed to fetch trivia question, please try again later.", ephemeral=True
+        )
+        return
+
+    print(question_data)
+
+    # Extracts question and answers from the question_data
+    question = question_data["question"]
+    correct_answer = question_data["correctAnswer"]
+    incorrect_answers = question_data["incorrectAnswers"]
+
+    # Shuffles and prepares choices for display
+    choices = [correct_answer] + incorrect_answers
+    random.shuffle(choices)  # Randomizes the order of choices
+
+    # Creates a formatted string of choices
+    answer_text = "\n".join(
+        [f"{idx + 1}. {choice}" for idx, choice in enumerate(choices)]
+    )
+    await interaction.response.send_message(f"{question}\n{answer_text}")
+
+    # Function to check if the response is from any user in the same channel who responded to the question
+    def check(m):
+        return m.channel == interaction.channel and m.author != bot.user
+
+    try:
+        # Waits for a message from any user
+        user_message = await bot.wait_for(
+            "message", check=check, timeout=60.0
+        )  # 60 seconds to respond
+        user_answer = user_message.content.strip()
+
+        # Checks if the answer is correct
+        if user_answer.lower() in [
+            str(choices.index(correct_answer) + 1),
+            correct_answer.lower(),
+        ]:
+            await interaction.followup.send(
+                f"{user_message.author.mention} Correct! 🎉", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"{user_message.author.mention} Incorrect! The correct answer was {correct_answer}.",
+                ephemeral=True,
+            )
+    except asyncio.TimeoutError:
+        await interaction.followup.send(
+            "Sorry, time's up! No one responded in time.", ephemeral=False
+        )
 
 
 # Runs the bot with the token
